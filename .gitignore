@@ -7,5 +7,3 @@ old_code/
 models/
 *.pth
 *.csv
-main.ipynb
-requirements.txt
