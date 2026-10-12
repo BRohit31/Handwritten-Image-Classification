@@ -1,0 +1,11 @@
+**/__pycache__/
+__pycache__/
+**/.DS_Store/
+.project_env/
+data/
+old_code/
+models/
+*.pth
+*.csv
+main.ipynb
+requirements.txt
