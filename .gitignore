@@ -4,6 +4,10 @@ __pycache__/
 .project_env/
 data/
 old_code/
+# test_code/
 models/
 *.pth
 *.csv
+main_updated.ipynb
+main_models.ipynb
+.gitattributes
