@@ -3,11 +3,11 @@ __pycache__/
 **/.DS_Store/
 .project_env/
 data/
-old_code/
-# test_code/
+figures/
 models/
+old_code/
+test_code/
 *.pth
 *.csv
-main_updated.ipynb
 main_models.ipynb
 .gitattributes

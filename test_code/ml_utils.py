@@ -10,10 +10,13 @@ Contents
   plot_* / top_confusions                            figures for error analysis
 """
 import time
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.patches import Rectangle
+from matplotlib.ticker import NullLocator
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
@@ -110,14 +113,20 @@ def sweep(make_fn, values, X, y, label, seed=42, n_splits=5):
     return pd.DataFrame(rows).set_index('value')
 
 
+
 def plot_sweep(ax, df, title, xlabel):
+    """CV accuracy vs. hyperparameter (mean ± std over folds).
+    Star = best mean; shaded band = values within one std of the best (statistical ties)."""
     x = list(range(len(df)))
     ax.errorbar(x, df['acc_mean'], yerr=df['acc_std'], marker='o', capsize=3)
     b = int(np.argmax(df['acc_mean'].values))
-    ax.plot(b, df['acc_mean'].iloc[b], 'r*', ms=14)
+    best, sd = df['acc_mean'].iloc[b], df['acc_std'].iloc[b]
+    ax.axhspan(best - sd, best, color='tab:red', alpha=0.12, label='within 1 std of best')
+    ax.plot(b, best, 'r*', ms=14, label='best mean')
     ax.set_xticks(x)
-    ax.set_xticklabels([str(v) for v in df.index])
+    ax.set_xticklabels([f'{v:g}' if isinstance(v, (int, float, np.number)) else str(v) for v in df.index])
     ax.set_title(title); ax.set_xlabel(xlabel); ax.set_ylabel('CV accuracy'); ax.grid(alpha=0.3)
+    ax.legend(fontsize=8, loc='best')
 
 
 # ======================================================================================
@@ -272,18 +281,35 @@ def label_sweep_table(df, metric='accuracy'):
     return agg.pivot(index='method', columns='n_labels', values='txt')
 
 
-def plot_label_sweep(df, ax=None, hlines=None):
-    """Accuracy vs. number of labels (mean ± std over seeds). hlines: label -> accuracy reference lines."""
-    ax = ax or plt.subplots(figsize=(7.5, 4.8))[1]
+
+def plot_label_sweep(df, ax=None, hlines=None, ylim=None):
+    """Accuracy vs. number of labeled images (mean ± std over seeds), log x-axis with readable ticks.
+    hlines: label -> accuracy reference lines. A reference below the y-range is written as a note
+    instead of stretching the axis."""
+    ax = ax or plt.subplots(figsize=(8, 5))[1]
+    ticks = df.groupby('label_frac')['n_labels'].first().sort_index()
     for method, g in df.groupby('method'):
         s = g.groupby('label_frac').agg(n=('n_labels', 'first'), mean=('accuracy', 'mean'),
                                         std=('accuracy', 'std'))
         ax.errorbar(s['n'], s['mean'], yerr=s['std'], marker='o', capsize=3, label=method)
+    lo, hi = df['accuracy'].min(), df['accuracy'].max()
+    ylim = ylim or (max(0.0, lo - 0.05), min(1.0, hi + 0.02))
+    below = 0
     for (label, v), ls in zip((hlines or {}).items(), ['--', ':', '-.']):
-        ax.axhline(v, color='gray', ls=ls, lw=1.2, label=label)
-    ax.set_xscale('log'); ax.set_xlabel('number of labeled training images (log scale)')
+        if v >= ylim[0]:
+            ax.axhline(v, color='gray', ls=ls, lw=1.2, label=label)
+        else:
+            ax.annotate(f'↓ {label}: {v:.3f} (below axis)', xy=(0.02, 0.03 + 0.06 * below),
+                        xycoords='axes fraction', fontsize=9, color='dimgray')
+            below += 1
+    ax.set_ylim(ylim)
+    ax.set_xscale('log')
+    ax.xaxis.set_minor_locator(NullLocator())               # no cluttered minor tick labels
+    ax.set_xticks(ticks.values)
+    ax.set_xticklabels([f'{n}\n({f:.0%})' for f, n in ticks.items()])
+    ax.set_xlabel('labeled training images (share of training set)')
     ax.set_ylabel('test accuracy'); ax.set_title('Accuracy vs. amount of labeled data')
-    ax.grid(alpha=0.3); ax.legend(fontsize=8)
+    ax.grid(alpha=0.3); ax.legend(fontsize=9, loc='lower right', framealpha=0.9)
     return ax
 
 
@@ -297,36 +323,55 @@ def paired_gain(df, method_a, method_b, metric='accuracy'):
 # ======================================================================================
 # Figures for error analysis
 # ======================================================================================
+
 def plot_nn_curves(results, names=None):
-    """Mean ± std train/validation accuracy per epoch over the CV folds, for NN models."""
+    """Mean ± std train/validation accuracy per epoch over the CV folds, for NN models.
+    (Validation = the inner split used for early stopping, so it is slightly optimistic.)"""
     names = names or [n for n, r in results.items() if r['histories']]
-    fig, axes = plt.subplots(1, len(names), figsize=(5 * len(names), 3.6), squeeze=False)
+    fig, axes = plt.subplots(1, len(names), figsize=(5.5 * len(names), 4), squeeze=False)
     for ax, n in zip(axes[0], names):
+        lows = []
         for key, label in [('train_acc', 'train'), ('val_acc', 'validation')]:
             hs = [h[key] for h in results[n]['histories']]
             L = max(len(h) for h in hs)
             M = np.array([h + [h[-1]] * (L - len(h)) for h in hs])   # early stopping => unequal lengths
             ax.plot(range(1, L + 1), M.mean(0), label=label)
             ax.fill_between(range(1, L + 1), M.mean(0) - M.std(0), M.mean(0) + M.std(0), alpha=0.2)
+            lows.append(M[:, 2:].min() if L > 3 else M.min())       # ignore the first epochs when scaling
+        ax.set_ylim(max(0.0, np.floor((min(lows) - 0.02) * 20) / 20), 1.005)
         ax.set_title(n); ax.set_xlabel('epoch'); ax.set_ylabel('accuracy')
-        ax.grid(alpha=0.3); ax.legend()
+        ax.grid(alpha=0.3); ax.legend(loc='lower right')
     plt.tight_layout()
     return fig
 
 
-def plot_confusion(y_true, y_pred, title, ax, normalize=True):
-    cm = confusion_matrix(y_true, y_pred)
-    if normalize:
-        cm = cm / cm.sum(axis=1, keepdims=True)
-    ax.imshow(cm, cmap='Blues', vmin=0, vmax=1 if normalize else None)
-    ax.set_xticks(range(10)); ax.set_yticks(range(10))
-    ax.set_xlabel('predicted'); ax.set_ylabel('true'); ax.set_title(title, fontsize=10)
+
+def plot_confusion(y_true, y_pred, title, ax, annotate='counts', fontsize=10):
+    """Confusion matrix that makes the ERRORS visible.
+    Diagonal (correct) cells are light gray with their counts; off-diagonal cells are coloured by count
+    (darker red = more images) and annotated; empty cells stay blank. annotate: 'counts' or 'rates'."""
+    cm = confusion_matrix(y_true, y_pred, labels=range(10))
+    rates = cm / cm.sum(axis=1, keepdims=True)
+    off = cm.astype(float)
+    np.fill_diagonal(off, np.nan)
+    off[cm == 0] = np.nan                       # empty cells stay white
+    vmax = max(1.0, np.nanmax(off)) if np.isfinite(off).any() else 1.0
+    ax.imshow(off, cmap='Reds', vmin=0, vmax=vmax * 1.3)
+    for i in range(10):
+        ax.add_patch(Rectangle((i - 0.5, i - 0.5), 1, 1, facecolor='#e6e6e6', edgecolor='none'))
     for i in range(10):
         for j in range(10):
-            v = cm[i, j]
-            if v >= 0.005:
-                ax.text(j, i, f'{v:.2f}' if normalize else int(v), ha='center', va='center',
-                        fontsize=6, color='white' if v > 0.5 else 'black')
+            if cm[i, j] == 0:
+                continue
+            txt = str(cm[i, j]) if annotate == 'counts' else f'{100 * rates[i, j]:.0f}%' if i == j else f'{100 * rates[i, j]:.1f}%'
+            dark = i != j and cm[i, j] > 0.6 * vmax
+            ax.text(j, i, txt, ha='center', va='center', fontsize=fontsize,
+                    color='white' if dark else 'black', fontweight='bold' if i != j else 'normal')
+    ax.set_xticks(range(10)); ax.set_yticks(range(10))
+    ax.set_xlim(-0.5, 9.5); ax.set_ylim(9.5, -0.5)
+    ax.set_xlabel('predicted'); ax.set_ylabel('true')
+    ax.set_title(f'{title}\naccuracy {np.trace(cm) / cm.sum():.3f}, {int(cm.sum() - np.trace(cm))} errors',
+                 fontsize=11)
 
 
 def top_confusions(y_true, y_pred, k=6):
@@ -340,18 +385,43 @@ def top_confusions(y_true, y_pred, k=6):
                         columns=['true', 'predicted', 'count', '% of true class'])
 
 
+
 def plot_misclassified(x, y_true, y_pred, pairs, n=8, title=''):
+    """One row per (true, predicted) pair showing up to n misclassified test images.
+    The grid is only as wide as the largest group, so there is no empty space."""
+    pairs = list(pairs)
     if len(pairs) == 0:
         print('No misclassified images to show.')
         return
-    fig, axes = plt.subplots(len(pairs), n, figsize=(1.5 * n, 1.8 * len(pairs)), squeeze=False)
-    for r, (t, p) in enumerate(pairs):
-        idx = np.where((y_true == t) & (y_pred == p))[0][:n]
-        for c in range(n):
-            axes[r, c].axis('off')
-            if c < len(idx):
-                axes[r, c].imshow(x[idx[c]].reshape(28, 28), cmap='gray')
-                axes[r, c].set_title(f'{t}→{p}', fontsize=9)
-    fig.suptitle(title)
+    groups = [np.where((y_true == t) & (y_pred == p))[0] for t, p in pairs]
+    cols = max(1, min(n, max(len(g) for g in groups)))
+    fig, axes = plt.subplots(len(pairs), cols, figsize=(2.0 * cols + 0.8, 2.1 * len(pairs)), squeeze=False)
+    for r, ((t, p), g) in enumerate(zip(pairs, groups)):
+        for c in range(cols):
+            ax = axes[r, c]
+            ax.set_xticks([]); ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(c < len(g))
+            if c < len(g):
+                ax.imshow(x[g[c]].reshape(28, 28), cmap='gray')
+        axes[r, 0].set_ylabel(f'true {t}\n→ pred {p}\n({len(g)} total)', fontsize=11, rotation=0,
+                              ha='right', va='center', labelpad=12)
+    fig.suptitle(title, fontsize=13)
     plt.tight_layout()
     plt.show()
+
+
+# ======================================================================================
+# Report-ready figure defaults
+# ======================================================================================
+def set_report_style():
+    """Call once at the top of the notebook: larger fonts everywhere and 200-dpi tight exports."""
+    plt.rcParams.update({'font.size': 11, 'axes.titlesize': 12, 'axes.labelsize': 11,
+                         'xtick.labelsize': 10, 'ytick.labelsize': 10, 'legend.fontsize': 9,
+                         'figure.dpi': 110, 'savefig.dpi': 200, 'savefig.bbox': 'tight'})
+
+
+def save_fig(name, fig=None, folder='figures'):
+    """Save the current (or given) figure as figures/<name>.png at 200 dpi, for the report."""
+    Path(folder).mkdir(exist_ok=True)
+    (fig or plt.gcf()).savefig(Path(folder) / f'{name}.png')
