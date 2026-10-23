@@ -2,12 +2,5 @@
 __pycache__/
 **/.DS_Store/
 .project_env/
-data/
-figures/
-models/
-old_code/
-test_code/
 *.pth
 *.csv
-main_models.ipynb
-.gitattributes
